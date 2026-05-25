@@ -39,6 +39,8 @@ pub struct ScanResult {
     pub estimated_humans: usize,
     pub scan_duration_secs: u64,
     pub interface: String,
+    pub scan_method: String,
+    pub log: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,40 +179,59 @@ fn enable_monitor_mode(interface: String) -> Result<String, String> {
     }
 }
 
-// --- Scan for probe requests using tshark ---
+// --- Scan: tries tshark probe sniffing first, falls back to ARP network scan ---
 
 #[tauri::command]
 fn scan_wifi(interface: String, duration_secs: u64) -> Result<ScanResult, String> {
-    // Find tshark — check common paths since GUI apps don't inherit shell PATH
-    let tshark = find_binary("tshark")
-        .ok_or("tshark is not installed. Click 'Install tshark' in the panel to set it up.")?;
+    let mut log = Vec::new();
 
-    let output = Command::new(&tshark)
-        .args([
-            "-i", &interface,
-            "-a", &format!("duration:{}", duration_secs),
-            "-Y", "wlan.fc.type_subtype == 0x04",
-            "-T", "fields",
-            "-e", "wlan.sa",
-            "-e", "wlan_radio.signal_dbm",
-            "-e", "wlan.ssid",
-            "-E", "separator=|",
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run tshark: {}", e))?;
+    // Try tshark probe request capture first
+    if let Some(tshark) = find_binary("tshark") {
+        log.push(format!("Found tshark at {}", tshark));
+        log.push(format!("Scanning on {} for {}s...", interface, duration_secs));
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        if stderr.contains("sudo") || stderr.contains("permission") {
-            return Err("tshark needs capture permissions. On macOS run: sudo chmod +r /dev/bpf*\nOn Linux, add yourself to the wireshark group: sudo usermod -aG wireshark $USER".to_string());
+        let output = Command::new(&tshark)
+            .args([
+                "-i", &interface,
+                "-a", &format!("duration:{}", duration_secs),
+                "-Y", "wlan.fc.type_subtype == 0x04",
+                "-T", "fields",
+                "-e", "wlan.sa",
+                "-e", "wlan_radio.signal_dbm",
+                "-e", "wlan.ssid",
+                "-E", "separator=|",
+            ])
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+                log.push(format!("tshark captured {} probe requests", lines.len()));
+
+                if !lines.is_empty() {
+                    return parse_tshark_output(&text, &interface, duration_secs, log);
+                }
+                log.push("No probe requests captured. Interface may need monitor mode.".to_string());
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                log.push(format!("tshark failed: {}", stderr.chars().take(200).collect::<String>()));
+            }
+            Err(e) => {
+                log.push(format!("tshark error: {}", e));
+            }
         }
-        if stderr.contains("monitor") || stderr.contains("doesn't support") {
-            return Err("This interface doesn't support monitor mode. Try enabling monitor mode first, or use a compatible USB WiFi adapter.".to_string());
-        }
-        return Err(format!("tshark error: {}", stderr));
+        log.push("Falling back to network ARP scan...".to_string());
+    } else {
+        log.push("tshark not found, using network ARP scan...".to_string());
     }
 
-    let text = String::from_utf8_lossy(&output.stdout);
+    // Fallback: ARP scan — detects devices on the local network
+    scan_arp(log, duration_secs)
+}
+
+fn parse_tshark_output(text: &str, interface: &str, duration_secs: u64, log: Vec<String>) -> Result<ScanResult, String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -255,8 +276,77 @@ fn scan_wifi(interface: String, duration_secs: u64) -> Result<ScanResult, String
         total_devices: total,
         estimated_humans: estimated,
         scan_duration_secs: duration_secs,
-        interface,
+        interface: interface.to_string(),
+        scan_method: "probe_request".to_string(),
+        log,
     })
+}
+
+// --- ARP network scan (fallback — detects devices on local network) ---
+
+fn scan_arp(mut log: Vec<String>, _duration_secs: u64) -> Result<ScanResult, String> {
+    // Run arp -a to get all devices on the local network
+    let output = Command::new("arp")
+        .arg("-a")
+        .output()
+        .map_err(|e| format!("Failed to run arp: {}", e))?;
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut devices = Vec::new();
+
+    for line in text.lines() {
+        // Parse arp output: "hostname (IP) at MAC on interface [ifscope]"
+        // or on Linux: "hostname (IP) at MAC [ether] on interface"
+        let mac = extract_mac_from_arp_line(line);
+        if let Some(mac) = mac {
+            if mac == "ff:ff:ff:ff:ff:ff" || mac == "(incomplete)" {
+                continue;
+            }
+            let ip = line.split('(').nth(1).and_then(|s| s.split(')').next()).unwrap_or("");
+            let is_randomized = is_mac_randomized(&mac);
+            let vendor = lookup_vendor(&mac);
+
+            devices.push(DetectedDevice {
+                mac,
+                rssi: -50, // ARP doesn't give RSSI, use a medium value
+                is_randomized,
+                last_seen: now,
+                ssid_probed: ip.to_string(),
+                vendor,
+            });
+        }
+    }
+
+    let total = devices.len();
+    let estimated = total; // ARP = connected devices, roughly 1 per person
+    log.push(format!("ARP scan found {} devices on local network", total));
+
+    Ok(ScanResult {
+        devices,
+        total_devices: total,
+        estimated_humans: estimated,
+        scan_duration_secs: 0,
+        interface: "arp".to_string(),
+        scan_method: "arp_network".to_string(),
+        log,
+    })
+}
+
+fn extract_mac_from_arp_line(line: &str) -> Option<String> {
+    // Look for MAC pattern: xx:xx:xx:xx:xx:xx or xx-xx-xx-xx-xx-xx
+    for word in line.split_whitespace() {
+        let cleaned = word.replace('-', ":");
+        let parts: Vec<&str> = cleaned.split(':').collect();
+        if parts.len() == 6 && parts.iter().all(|p| p.len() <= 2 && u8::from_str_radix(p, 16).is_ok()) {
+            return Some(cleaned.to_lowercase());
+        }
+    }
+    None
 }
 
 // --- Install tshark ---

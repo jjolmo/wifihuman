@@ -13,6 +13,8 @@ export interface ScanResult {
   estimated_humans: number;
   scan_duration_secs: number;
   interface: string;
+  scan_method: string;
+  log: string[];
 }
 
 export interface WiFiInterface {
