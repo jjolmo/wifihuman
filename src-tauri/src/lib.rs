@@ -181,14 +181,11 @@ fn enable_monitor_mode(interface: String) -> Result<String, String> {
 
 #[tauri::command]
 fn scan_wifi(interface: String, duration_secs: u64) -> Result<ScanResult, String> {
-    // Check if tshark exists
-    let tshark_check = Command::new("which").arg("tshark").output();
-    if tshark_check.map(|o| !o.status.success()).unwrap_or(true) {
-        return Err("tshark is not installed. Click 'Install tshark' in the panel to set it up.".to_string());
-    }
+    // Find tshark — check common paths since GUI apps don't inherit shell PATH
+    let tshark = find_binary("tshark")
+        .ok_or("tshark is not installed. Click 'Install tshark' in the panel to set it up.")?;
 
-    // Try without sudo first (macOS dumpcap may have permissions), then with sudo
-    let output = Command::new("tshark")
+    let output = Command::new(&tshark)
         .args([
             "-i", &interface,
             "-a", &format!("duration:{}", duration_secs),
@@ -268,12 +265,13 @@ fn scan_wifi(interface: String, duration_secs: u64) -> Result<ScanResult, String
 fn install_tshark() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
-        // Check if brew exists
-        let brew_check = Command::new("which").arg("brew").output();
-        if brew_check.map(|o| !o.status.success()).unwrap_or(true) {
-            return Err("Homebrew is not installed. Install it first: https://brew.sh".to_string());
-        }
-        let output = Command::new("brew")
+        // macOS GUI apps don't inherit shell PATH — find brew explicitly
+        let brew_path = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .ok_or("Homebrew is not installed. Install it first: https://brew.sh")?;
+
+        let output = Command::new(brew_path)
             .args(["install", "wireshark"])
             .output()
             .map_err(|e| format!("Failed to run brew: {}", e))?;
@@ -318,6 +316,32 @@ fn install_tshark() -> Result<String, String> {
     }
 }
 
+/// Find a binary by checking common paths (GUI apps don't inherit shell PATH)
+fn find_binary(name: &str) -> Option<String> {
+    // Try PATH first
+    if let Ok(output) = Command::new("which").arg(name).output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(path);
+            }
+        }
+    }
+    // Check common locations
+    let common_paths = [
+        format!("/opt/homebrew/bin/{}", name),
+        format!("/usr/local/bin/{}", name),
+        format!("/usr/bin/{}", name),
+        format!("/usr/sbin/{}", name),
+    ];
+    for p in &common_paths {
+        if std::path::Path::new(p).exists() {
+            return Some(p.clone());
+        }
+    }
+    None
+}
+
 fn is_mac_randomized(mac: &str) -> bool {
     // A MAC is randomized if the locally-administered bit (bit 1 of first octet) is set
     if let Some(first_byte_str) = mac.split(':').next() {
@@ -349,13 +373,8 @@ fn lookup_vendor(mac: &str) -> String {
 #[tauri::command]
 fn check_dependencies() -> Result<HashMap<String, bool>, String> {
     let mut deps = HashMap::new();
-
-    let tshark = Command::new("which").arg("tshark").output().map(|o| o.status.success()).unwrap_or(false);
-    deps.insert("tshark".to_string(), tshark);
-
-    let airmon = Command::new("which").arg("airmon-ng").output().map(|o| o.status.success()).unwrap_or(false);
-    deps.insert("airmon-ng".to_string(), airmon);
-
+    deps.insert("tshark".to_string(), find_binary("tshark").is_some());
+    deps.insert("airmon-ng".to_string(), find_binary("airmon-ng").is_some());
     Ok(deps)
 }
 
