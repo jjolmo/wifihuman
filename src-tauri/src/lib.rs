@@ -179,15 +179,132 @@ fn enable_monitor_mode(interface: String) -> Result<String, String> {
     }
 }
 
-// --- Scan: tries tshark probe sniffing first, falls back to ARP network scan ---
+// --- Scan: tries monitor mode + tshark, falls back to ARP ---
 
 #[tauri::command]
 fn scan_wifi(interface: String, duration_secs: u64) -> Result<ScanResult, String> {
     let mut log = Vec::new();
 
-    // Try tshark probe request capture first
-    if let Some(tshark) = find_binary("tshark") {
-        log.push(format!("Found tshark at {}", tshark));
+    let tshark = match find_binary("tshark") {
+        Some(t) => { log.push(format!("Found tshark at {}", t)); t },
+        None => {
+            log.push("tshark not found, using ARP scan...".to_string());
+            return scan_arp(log, duration_secs);
+        }
+    };
+
+    // On macOS: enable monitor mode via airport, scan, then restore
+    #[cfg(target_os = "macos")]
+    {
+        let airport = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport";
+        let has_airport = std::path::Path::new(airport).exists();
+
+        if has_airport {
+            log.push("Enabling monitor mode (WiFi will disconnect briefly)...".to_string());
+
+            // Dissociate from current network
+            let _ = Command::new(airport).args(["-z"]).output();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+
+            // Start sniffing on a common channel (channel 6 is most used)
+            // airport sniff runs in background, we use tshark to capture
+            let sniff_child = Command::new(airport)
+                .args(["sniff", "6"])
+                .spawn();
+
+            match sniff_child {
+                Ok(mut child) => {
+                    log.push(format!("Monitor mode active on channel 6, capturing for {}s...", duration_secs));
+
+                    // Give airport a moment to set up monitor mode
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+
+                    // Capture with tshark on the monitor interface (usually en0)
+                    let output = Command::new(&tshark)
+                        .args([
+                            "-i", &interface,
+                            "-a", &format!("duration:{}", duration_secs),
+                            "-Y", "wlan.fc.type_subtype == 0x04",
+                            "-T", "fields",
+                            "-e", "wlan.sa",
+                            "-e", "wlan_radio.signal_dbm",
+                            "-e", "wlan.ssid",
+                            "-E", "separator=|",
+                        ])
+                        .output();
+
+                    // Stop airport sniff
+                    let _ = child.kill();
+                    let _ = child.wait();
+
+                    // Restore WiFi — reconnect to previous network
+                    log.push("Restoring WiFi connection...".to_string());
+                    let _ = Command::new("networksetup")
+                        .args(["-setairportpower", &interface, "off"])
+                        .output();
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let _ = Command::new("networksetup")
+                        .args(["-setairportpower", &interface, "on"])
+                        .output();
+
+                    match output {
+                        Ok(out) if out.status.success() => {
+                            let text = String::from_utf8_lossy(&out.stdout);
+                            let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+                            log.push(format!("Captured {} probe requests", lines.len()));
+                            if !lines.is_empty() {
+                                return parse_tshark_output(&text, &interface, duration_secs, log);
+                            }
+                            log.push("No probes captured. Falling back to ARP...".to_string());
+                        }
+                        Ok(out) => {
+                            let stderr = String::from_utf8_lossy(&out.stderr);
+                            log.push(format!("tshark error: {}", stderr.chars().take(150).collect::<String>()));
+                        }
+                        Err(e) => {
+                            log.push(format!("tshark failed: {}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    log.push(format!("airport sniff failed: {}. Trying direct capture...", e));
+                }
+            }
+        } else {
+            log.push("airport utility not found. Trying direct tshark capture...".to_string());
+        }
+
+        // If airport method didn't work, try direct tshark (might work if user has a USB adapter in monitor mode)
+        let output = Command::new(&tshark)
+            .args([
+                "-i", &interface,
+                "-a", &format!("duration:{}", duration_secs),
+                "-Y", "wlan.fc.type_subtype == 0x04",
+                "-T", "fields",
+                "-e", "wlan.sa",
+                "-e", "wlan_radio.signal_dbm",
+                "-e", "wlan.ssid",
+                "-E", "separator=|",
+            ])
+            .output();
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+                if !lines.is_empty() {
+                    log.push(format!("Direct capture got {} probes", lines.len()));
+                    return parse_tshark_output(&text, &interface, duration_secs, log);
+                }
+            }
+        }
+        log.push("Falling back to ARP scan...".to_string());
+        return scan_arp(log, duration_secs);
+    }
+
+    // On Linux: try tshark directly (assumes user has set up monitor mode)
+    #[cfg(not(target_os = "macos"))]
+    {
         log.push(format!("Scanning on {} for {}s...", interface, duration_secs));
 
         let output = Command::new(&tshark)
@@ -207,28 +324,23 @@ fn scan_wifi(interface: String, duration_secs: u64) -> Result<ScanResult, String
             Ok(out) if out.status.success() => {
                 let text = String::from_utf8_lossy(&out.stdout);
                 let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-                log.push(format!("tshark captured {} probe requests", lines.len()));
-
+                log.push(format!("Captured {} probe requests", lines.len()));
                 if !lines.is_empty() {
                     return parse_tshark_output(&text, &interface, duration_secs, log);
                 }
-                log.push("No probe requests captured. Interface may need monitor mode.".to_string());
+                log.push("No probes. Enable monitor mode: sudo airmon-ng start <iface>".to_string());
             }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
-                log.push(format!("tshark failed: {}", stderr.chars().take(200).collect::<String>()));
+                log.push(format!("tshark error: {}", stderr.chars().take(200).collect::<String>()));
             }
             Err(e) => {
-                log.push(format!("tshark error: {}", e));
+                log.push(format!("tshark failed: {}", e));
             }
         }
-        log.push("Falling back to network ARP scan...".to_string());
-    } else {
-        log.push("tshark not found, using network ARP scan...".to_string());
+        log.push("Falling back to ARP scan...".to_string());
+        scan_arp(log, duration_secs)
     }
-
-    // Fallback: ARP scan — detects devices on the local network
-    scan_arp(log, duration_secs)
 }
 
 fn parse_tshark_output(text: &str, interface: &str, duration_secs: u64, log: Vec<String>) -> Result<ScanResult, String> {

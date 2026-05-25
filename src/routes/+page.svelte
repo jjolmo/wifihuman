@@ -93,6 +93,7 @@
           SCAN
         {/if}
       </button>
+      <p class="scan-warn">WiFi may disconnect briefly during probe scan</p>
 
       {#if scannerStore.error}
         <div class="error">{scannerStore.error}</div>
@@ -306,6 +307,7 @@
   .dep-item { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--color-text-secondary); }
   .dep-status { font-size: 14px; color: #ff6b35; }
   .dep-status.ok { color: #2ea043; }
+  .scan-warn { font-size: 10px; color: #ff6b3580; text-align: center; margin-top: -6px; }
   .method-badge {
     font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 6px;
     background: #ff6b3520; color: #ff6b35; border: 1px solid #ff6b3530;
