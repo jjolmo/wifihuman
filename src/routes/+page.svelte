@@ -38,6 +38,8 @@
           <span class="scan-pulse"></span>
           Scanning...
         </div>
+      {:else if scannerStore.result?.interface === 'simulated'}
+        <div class="simulated-label">DEMO MODE — simulated data</div>
       {/if}
       <Radar dots={scannerStore.radarDots} isScanning={scannerStore.isScanning} />
     </div>
@@ -85,7 +87,7 @@
         {/if}
       </button>
 
-      {#if scannerStore.error}
+      {#if scannerStore.error && !scannerStore.error.includes('sudo')}
         <div class="error">{scannerStore.error}</div>
       {/if}
 
@@ -107,8 +109,13 @@
           <h3>Dependencies</h3>
           {#each Object.entries(scannerStore.deps) as [name, installed]}
             <div class="dep-item">
-              <span class="dep-status" class:ok={installed}>{installed ? '&#10003;' : '&#10007;'}</span>
+              <span class="dep-status" class:ok={installed}>{installed ? '\u2713' : '\u2717'}</span>
               <span>{name}</span>
+              {#if !installed}
+                <span class="dep-install">
+                  {#if name === 'tshark'}(brew install wireshark){:else}(brew install aircrack-ng){/if}
+                </span>
+              {/if}
             </div>
           {/each}
           <p class="dep-note">Without tshark + monitor mode, scan runs in demo mode with simulated data.</p>
@@ -186,6 +193,13 @@
     animation: pulse 1.2s ease-in-out infinite;
   }
   @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.8); } }
+  .simulated-label {
+    position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+    font-size: 11px; color: #ff6b35; font-weight: 600;
+    letter-spacing: 2px; text-transform: uppercase;
+    background: #ff6b3515; border: 1px solid #ff6b3530;
+    padding: 4px 14px; border-radius: 20px;
+  }
 
   /* Panel */
   .panel {
@@ -245,6 +259,7 @@
   .dep-item { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--color-text-secondary); }
   .dep-status { font-size: 14px; color: #ff6b35; }
   .dep-status.ok { color: #2ea043; }
+  .dep-install { font-size: 10px; color: var(--color-text-muted); font-family: var(--font-mono); }
   .dep-note { font-size: 11px; color: var(--color-text-muted); line-height: 1.4; margin-top: 4px; }
 
   /* Device list */
