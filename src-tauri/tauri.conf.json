@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicoverbruggen/tauri-v2-schemas/refs/heads/main/src/tauri.conf.schema.json",
-  "productName": "WiFi Human",
+  "productName": "WifiHuman",
   "version": "0.1.0",
   "identifier": "com.wifihuman.app",
   "build": {
