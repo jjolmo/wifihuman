@@ -47,8 +47,6 @@
           <span class="scan-pulse"></span>
           Scanning...
         </div>
-      {:else if scannerStore.result?.interface === 'simulated'}
-        <div class="simulated-label">DEMO MODE — simulated data</div>
       {/if}
       <Radar dots={scannerStore.radarDots} isScanning={scannerStore.isScanning} />
     </div>
@@ -96,38 +94,51 @@
         {/if}
       </button>
 
-      {#if scannerStore.error && !scannerStore.error.includes('sudo')}
+      {#if scannerStore.error}
         <div class="error">{scannerStore.error}</div>
       {/if}
 
+      <!-- Install tshark button if missing -->
+      {#if scannerStore.deps['tshark'] === false}
+        <div class="install-section">
+          <p class="install-msg">tshark is required for WiFi scanning.</p>
+          <button
+            class="btn btn-install"
+            onclick={() => scannerStore.installTshark()}
+            disabled={scannerStore.isInstalling}
+          >
+            {scannerStore.isInstalling ? 'Installing...' : 'Install tshark'}
+          </button>
+          {#if scannerStore.installMessage}
+            <p class="install-result">{scannerStore.installMessage}</p>
+          {/if}
+        </div>
+      {/if}
+
       <!-- Legend -->
-      <div class="legend">
-        <div class="legend-item">
-          <span class="legend-dot real"></span>
-          <span>Real MAC (identified)</span>
+      {#if scannerStore.result}
+        <div class="legend">
+          <div class="legend-item">
+            <span class="legend-dot real"></span>
+            <span>Real MAC (identified)</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-dot random"></span>
+            <span>Randomized MAC</span>
+          </div>
         </div>
-        <div class="legend-item">
-          <span class="legend-dot random"></span>
-          <span>Randomized MAC</span>
-        </div>
-      </div>
+      {/if}
 
       <!-- Dependencies -->
       {#if Object.keys(scannerStore.deps).length > 0}
         <div class="panel-section">
-          <h3>Dependencies</h3>
+          <h3>Status</h3>
           {#each Object.entries(scannerStore.deps) as [name, installed]}
             <div class="dep-item">
               <span class="dep-status" class:ok={installed}>{installed ? '\u2713' : '\u2717'}</span>
               <span>{name}</span>
-              {#if !installed}
-                <span class="dep-install">
-                  {#if name === 'tshark'}(brew install wireshark){:else}(brew install aircrack-ng){/if}
-                </span>
-              {/if}
             </div>
           {/each}
-          <p class="dep-note">Without tshark + monitor mode, scan runs in demo mode with simulated data.</p>
         </div>
       {/if}
 
@@ -211,13 +222,6 @@
     animation: pulse 1.2s ease-in-out infinite;
   }
   @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.8); } }
-  .simulated-label {
-    position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
-    font-size: 11px; color: #ff6b35; font-weight: 600;
-    letter-spacing: 2px; text-transform: uppercase;
-    background: #ff6b3515; border: 1px solid #ff6b3530;
-    padding: 4px 14px; border-radius: 20px;
-  }
 
   /* Panel */
   .panel {
@@ -277,8 +281,18 @@
   .dep-item { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--color-text-secondary); }
   .dep-status { font-size: 14px; color: #ff6b35; }
   .dep-status.ok { color: #2ea043; }
-  .dep-install { font-size: 10px; color: var(--color-text-muted); font-family: var(--font-mono); }
-  .dep-note { font-size: 11px; color: var(--color-text-muted); line-height: 1.4; margin-top: 4px; }
+  .install-section {
+    background: #ff6b3510; border: 1px solid #ff6b3530; border-radius: 8px;
+    padding: 12px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .install-msg { font-size: 13px; color: #ff6b35; font-weight: 500; }
+  .btn-install {
+    background: #ff6b35; color: #0a0e14; font-weight: 700; font-size: 13px;
+    padding: 10px; border-radius: 8px; border: none; cursor: pointer;
+  }
+  .btn-install:hover { opacity: 0.9; }
+  .btn-install:disabled { opacity: 0.5; cursor: not-allowed; }
+  .install-result { font-size: 12px; color: var(--color-text-secondary); line-height: 1.4; }
 
   /* Device list */
   .device-list {

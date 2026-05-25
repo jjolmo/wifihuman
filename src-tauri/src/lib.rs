@@ -181,11 +181,10 @@ fn enable_monitor_mode(interface: String) -> Result<String, String> {
 
 #[tauri::command]
 fn scan_wifi(interface: String, duration_secs: u64) -> Result<ScanResult, String> {
-    // Use tshark to capture probe requests
-    // Check if tshark exists first
+    // Check if tshark exists
     let tshark_check = Command::new("which").arg("tshark").output();
     if tshark_check.map(|o| !o.status.success()).unwrap_or(true) {
-        return scan_wifi_simulated(duration_secs);
+        return Err("tshark is not installed. Click 'Install tshark' in the panel to set it up.".to_string());
     }
 
     // Try without sudo first (macOS dumpcap may have permissions), then with sudo
@@ -201,26 +200,17 @@ fn scan_wifi(interface: String, duration_secs: u64) -> Result<ScanResult, String
             "-E", "separator=|",
         ])
         .output()
-        .or_else(|_| {
-            Command::new("sudo")
-                .args([
-                    "tshark",
-                    "-i", &interface,
-                    "-a", &format!("duration:{}", duration_secs),
-                    "-Y", "wlan.fc.type_subtype == 0x04",
-                    "-T", "fields",
-                    "-e", "wlan.sa",
-                    "-e", "wlan_radio.signal_dbm",
-                    "-e", "wlan.ssid",
-                    "-E", "separator=|",
-                ])
-                .output()
-        })
         .map_err(|e| format!("Failed to run tshark: {}", e))?;
 
     if !output.status.success() {
-        // Fallback to simulated data on any error
-        return scan_wifi_simulated(duration_secs);
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if stderr.contains("sudo") || stderr.contains("permission") {
+            return Err("tshark needs capture permissions. On macOS run: sudo chmod +r /dev/bpf*\nOn Linux, add yourself to the wireshark group: sudo usermod -aG wireshark $USER".to_string());
+        }
+        if stderr.contains("monitor") || stderr.contains("doesn't support") {
+            return Err("This interface doesn't support monitor mode. Try enabling monitor mode first, or use a compatible USB WiFi adapter.".to_string());
+        }
+        return Err(format!("tshark error: {}", stderr));
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
@@ -272,79 +262,60 @@ fn scan_wifi(interface: String, duration_secs: u64) -> Result<ScanResult, String
     })
 }
 
-// --- Simulated scan for demo/testing when no monitor mode available ---
+// --- Install tshark ---
 
-fn scan_wifi_simulated(duration_secs: u64) -> Result<ScanResult, String> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let seed = now;
-
-    // Generate 5-15 simulated devices
-    let count = 5 + (seed % 11) as usize;
-    let mut devices = Vec::new();
-
-    let vendors = ["Apple", "Samsung", "Google", "Xiaomi", "OnePlus", "Huawei", "Sony", "LG", "Motorola", "Nokia", "OPPO", "Realme"];
-    let ssids = ["HomeWiFi", "Starbucks", "Airport_Free", "eduroam", "", "AndroidAP", "iPhone", "DIRECT-xx", "FreeWiFi", ""];
-
-    for i in 0..count {
-        let is_random = (seed + i as u64) % 3 != 0; // ~66% random
-        let mac = if is_random {
-            // Random MAC: locally-administered bit set
-            format!(
-                "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                0x02 | ((seed + i as u64 * 7) % 256) as u8,
-                ((seed + i as u64 * 13) % 256) as u8,
-                ((seed + i as u64 * 23) % 256) as u8,
-                ((seed + i as u64 * 37) % 256) as u8,
-                ((seed + i as u64 * 47) % 256) as u8,
-                ((seed + i as u64 * 59) % 256) as u8,
-            )
+#[tauri::command]
+fn install_tshark() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Check if brew exists
+        let brew_check = Command::new("which").arg("brew").output();
+        if brew_check.map(|o| !o.status.success()).unwrap_or(true) {
+            return Err("Homebrew is not installed. Install it first: https://brew.sh".to_string());
+        }
+        let output = Command::new("brew")
+            .args(["install", "wireshark"])
+            .output()
+            .map_err(|e| format!("Failed to run brew: {}", e))?;
+        if output.status.success() {
+            // Fix BPF permissions on macOS so tshark can capture without sudo
+            let _ = Command::new("sudo")
+                .args(["chmod", "+r", "/dev/bpf0", "/dev/bpf1", "/dev/bpf2", "/dev/bpf3"])
+                .output();
+            Ok("tshark installed successfully via Homebrew".to_string())
         } else {
-            // "Real" MAC from known vendor
-            let prefixes = ["00:1a:2b", "ac:de:48", "f0:18:98", "34:ab:37", "d4:f5:47"];
-            let prefix = prefixes[i % prefixes.len()];
-            format!(
-                "{}:{:02x}:{:02x}:{:02x}",
-                prefix,
-                ((seed + i as u64 * 31) % 256) as u8,
-                ((seed + i as u64 * 41) % 256) as u8,
-                ((seed + i as u64 * 53) % 256) as u8,
-            )
-        };
-
-        let rssi = -30 - ((seed + i as u64 * 17) % 50) as i32;
-        let vendor = if is_random {
-            "Unknown".to_string()
-        } else {
-            vendors[i % vendors.len()].to_string()
-        };
-        let ssid = ssids[(seed as usize + i) % ssids.len()].to_string();
-
-        devices.push(DetectedDevice {
-            mac,
-            rssi,
-            is_randomized: is_random,
-            last_seen: now - (i as u64 * 3),
-            ssid_probed: ssid,
-            vendor,
-        });
+            Err(format!("brew install failed: {}", String::from_utf8_lossy(&output.stderr)))
+        }
     }
 
-    let total = devices.len();
-    let non_random = devices.iter().filter(|d| !d.is_randomized).count();
-    let random = devices.iter().filter(|d| d.is_randomized).count();
-    let estimated = non_random + (random as f64 * 0.7).ceil() as usize;
+    #[cfg(target_os = "linux")]
+    {
+        let output = Command::new("sudo")
+            .args(["apt-get", "install", "-y", "tshark"])
+            .output()
+            .or_else(|_| {
+                Command::new("sudo")
+                    .args(["dnf", "install", "-y", "wireshark-cli"])
+                    .output()
+            })
+            .map_err(|e| format!("Failed to install: {}", e))?;
+        if output.status.success() {
+            // Add user to wireshark group
+            if let Ok(user) = std::env::var("USER") {
+                let _ = Command::new("sudo")
+                    .args(["usermod", "-aG", "wireshark", &user])
+                    .output();
+            }
+            Ok("tshark installed. You may need to log out and back in for group permissions.".to_string())
+        } else {
+            Err(format!("Install failed: {}", String::from_utf8_lossy(&output.stderr)))
+        }
+    }
 
-    // Simulate scan time
-    std::thread::sleep(std::time::Duration::from_secs(duration_secs.min(3)));
-
-    Ok(ScanResult {
-        devices,
-        total_devices: total,
-        estimated_humans: estimated,
-        scan_duration_secs: duration_secs,
-        interface: "simulated".to_string(),
-    })
+    #[cfg(target_os = "windows")]
+    {
+        Err("On Windows, download Wireshark from https://www.wireshark.org/download.html and install with tshark component enabled.".to_string())
+    }
 }
 
 fn is_mac_randomized(mac: &str) -> bool {
@@ -537,6 +508,7 @@ pub fn run() {
             enable_monitor_mode,
             scan_wifi,
             check_dependencies,
+            install_tshark,
             check_for_updates,
             run_self_update,
             create_desktop_entry,

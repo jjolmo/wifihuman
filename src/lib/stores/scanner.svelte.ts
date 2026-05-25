@@ -65,10 +65,27 @@ class ScannerStore {
         interface: this.selectedInterface
       });
       this.selectedInterface = monIface;
-      // Refresh interfaces
       this.interfaces = await invoke<WiFiInterface[]>('list_wifi_interfaces');
     } catch (e: any) {
       this.error = e.toString();
+    }
+  }
+
+  isInstalling = $state(false);
+  installMessage = $state('');
+
+  async installTshark() {
+    this.isInstalling = true;
+    this.installMessage = '';
+    this.error = null;
+    try {
+      this.installMessage = await invoke<string>('install_tshark');
+      // Refresh deps
+      this.deps = await invoke<Record<string, boolean>>('check_dependencies');
+    } catch (e: any) {
+      this.installMessage = e.toString();
+    } finally {
+      this.isInstalling = false;
     }
   }
 }
