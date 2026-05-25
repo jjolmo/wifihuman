@@ -129,6 +129,19 @@
         </div>
       {/if}
 
+      <!-- Scan method indicator -->
+      {#if scannerStore.result}
+        <div class="panel-section">
+          <h3>Scan Method</h3>
+          <div class="method-badge" class:probe={scannerStore.result.scan_method === 'probe_request'}>
+            {scannerStore.result.scan_method === 'probe_request' ? 'Probe Request Sniffing' : 'ARP Network Scan'}
+          </div>
+          {#if scannerStore.result.scan_method === 'arp_network'}
+            <p class="method-note">Showing devices on your local network. For full probe detection, enable monitor mode.</p>
+          {/if}
+        </div>
+      {/if}
+
       <!-- Dependencies -->
       {#if Object.keys(scannerStore.deps).length > 0}
         <div class="panel-section">
@@ -139,6 +152,18 @@
               <span>{name}</span>
             </div>
           {/each}
+        </div>
+      {/if}
+
+      <!-- Log -->
+      {#if scannerStore.result?.log?.length}
+        <div class="panel-section">
+          <h3>Log</h3>
+          <div class="log-box">
+            {#each scannerStore.result.log as line}
+              <div class="log-line">{line}</div>
+            {/each}
+          </div>
         </div>
       {/if}
 
@@ -281,6 +306,18 @@
   .dep-item { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--color-text-secondary); }
   .dep-status { font-size: 14px; color: #ff6b35; }
   .dep-status.ok { color: #2ea043; }
+  .method-badge {
+    font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 6px;
+    background: #ff6b3520; color: #ff6b35; border: 1px solid #ff6b3530;
+    text-align: center;
+  }
+  .method-badge.probe { background: #00e5ff20; color: #00e5ff; border-color: #00e5ff30; }
+  .method-note { font-size: 11px; color: var(--color-text-muted); line-height: 1.4; margin-top: 6px; }
+  .log-box {
+    background: #050810; border: 1px solid var(--color-border); border-radius: 6px;
+    padding: 8px; max-height: 120px; overflow-y: auto; font-family: var(--font-mono);
+  }
+  .log-line { font-size: 10px; color: var(--color-text-muted); line-height: 1.6; }
   .install-section {
     background: #ff6b3510; border: 1px solid #ff6b3530; border-radius: 8px;
     padding: 12px; display: flex; flex-direction: column; gap: 8px;
