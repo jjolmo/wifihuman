@@ -1,6 +1,6 @@
 [package]
 name = "wifihuman"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "WiFi-based human presence detector using probe request sniffing"
 
