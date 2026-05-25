@@ -1,12 +1,20 @@
 <script lang="ts">
   import Radar from '$lib/components/Radar.svelte';
+  import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import { scannerStore } from '$lib/stores/scanner.svelte';
   import { onMount } from 'svelte';
 
   onMount(() => { scannerStore.init(); });
 
   let showDeviceList = $state(false);
+  let showSettings = $state(false);
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && showSettings) showSettings = false;
+  }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <div class="app">
   <!-- Header -->
@@ -26,6 +34,7 @@
           <span class="stat-label">Devices</span>
         </div>
       {/if}
+      <button class="settings-btn" onclick={() => showSettings = true}>{'\u2699'}</button>
     </div>
   </div>
 
@@ -159,6 +168,10 @@
   {/if}
 </div>
 
+{#if showSettings}
+  <SettingsPanel onclose={() => showSettings = false} />
+{/if}
+
 <style>
   .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
@@ -175,6 +188,11 @@
   .stat { display: flex; flex-direction: column; align-items: center; }
   .stat-value { font-size: 28px; font-weight: 700; color: var(--color-accent); font-family: var(--font-mono); line-height: 1; }
   .stat-label { font-size: 10px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
+  .settings-btn {
+    background: none; border: none; color: var(--color-text-secondary);
+    font-size: 20px; cursor: pointer; padding: 4px; margin-left: 8px;
+  }
+  .settings-btn:hover { color: var(--color-text-primary); }
 
   /* Main */
   .main { display: flex; flex: 1; overflow: hidden; }
