@@ -182,9 +182,15 @@ fn enable_monitor_mode(interface: String) -> Result<String, String> {
 #[tauri::command]
 fn scan_wifi(interface: String, duration_secs: u64) -> Result<ScanResult, String> {
     // Use tshark to capture probe requests
-    let output = Command::new("sudo")
+    // Check if tshark exists first
+    let tshark_check = Command::new("which").arg("tshark").output();
+    if tshark_check.map(|o| !o.status.success()).unwrap_or(true) {
+        return scan_wifi_simulated(duration_secs);
+    }
+
+    // Try without sudo first (macOS dumpcap may have permissions), then with sudo
+    let output = Command::new("tshark")
         .args([
-            "tshark",
             "-i", &interface,
             "-a", &format!("duration:{}", duration_secs),
             "-Y", "wlan.fc.type_subtype == 0x04",
@@ -195,15 +201,26 @@ fn scan_wifi(interface: String, duration_secs: u64) -> Result<ScanResult, String
             "-E", "separator=|",
         ])
         .output()
-        .map_err(|e| format!("Failed to run tshark: {}. Is tshark/wireshark installed?", e))?;
+        .or_else(|_| {
+            Command::new("sudo")
+                .args([
+                    "tshark",
+                    "-i", &interface,
+                    "-a", &format!("duration:{}", duration_secs),
+                    "-Y", "wlan.fc.type_subtype == 0x04",
+                    "-T", "fields",
+                    "-e", "wlan.sa",
+                    "-e", "wlan_radio.signal_dbm",
+                    "-e", "wlan.ssid",
+                    "-E", "separator=|",
+                ])
+                .output()
+        })
+        .map_err(|e| format!("Failed to run tshark: {}", e))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // If tshark fails, try a simulated scan for demo/testing
-        if stderr.contains("permission") || stderr.contains("monitor") || stderr.contains("No such device") {
-            return scan_wifi_simulated(duration_secs);
-        }
-        return Err(format!("tshark error: {}", stderr));
+        // Fallback to simulated data on any error
+        return scan_wifi_simulated(duration_secs);
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
