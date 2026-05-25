@@ -374,6 +374,8 @@ fn lookup_vendor(mac: &str) -> String {
 fn check_dependencies() -> Result<HashMap<String, bool>, String> {
     let mut deps = HashMap::new();
     deps.insert("tshark".to_string(), find_binary("tshark").is_some());
+    // airmon-ng is only relevant on Linux — macOS uses airport for monitor mode
+    #[cfg(target_os = "linux")]
     deps.insert("airmon-ng".to_string(), find_binary("airmon-ng").is_some());
     Ok(deps)
 }
